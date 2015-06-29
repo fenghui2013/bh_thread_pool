@@ -4,11 +4,14 @@
 
 #include "bh_thread_pool.h"
 
-void test_print(int data) {
+void normal_task(int task_address, int sock_fd, int data) {
     int i;
-    for (i=0; i<1000000; i++) {
-        data += 1;
-    }
+    printf("%d===%d: %d\n", task_address, sock_fd, data);
+}
+
+void special_task(int task_address, int sock_fd, int data, int special) {
+    int i;
+    printf("%d===%d: %d\n", task_address, sock_fd, data);
 }
 
 int
@@ -19,10 +22,14 @@ get_random(int min, int max) {
 int
 main() {
     int count = 0;
-    bh_thread_pool *pool = bh_thread_pool_create(4, 512);
+    bh_thread_pool *pool = bh_thread_pool_create(4, 4);
     sleep(1);
-    while (count < 10000) {
-        bh_thread_pool_add_task(pool, test_print, get_random(1, 65535), count++);
+    while (count < 30) {
+        if (count%10 == 0) {
+            bh_thread_pool_add_special_task(pool, special_task, special, get_random(1, 5), count++, 0);
+        } else {
+            bh_thread_pool_add_normal_task(pool, normal_task, normal, get_random(1, 5), count++);
+        }
     }
 
     bh_thread_pool_release(pool);

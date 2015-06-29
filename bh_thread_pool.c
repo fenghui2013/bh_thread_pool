@@ -11,9 +11,14 @@
 
 typedef struct bh_thread_task bh_thread_task;
 struct bh_thread_task {
+    int task_type;
+    int is_running;
     int sock_fd;
     int data;
-    bh_task task;
+    union {
+        bh_normal_task normal_task;
+        bh_special_task special_task;
+    } task;
     bh_thread_task *next;
 };
 
@@ -129,13 +134,21 @@ _task_killer(void *arg) {
         }
 
         task = pool->queue_current_read;
+        task->is_running = 1;
         pool->queue_current_read = pool->queue_current_read->next;
         pool->current_task_count -= 1;
         pthread_mutex_unlock(&(pool->queue_ready_lock));
 
-        (*(task->task))(task->data);
+        if (task->task_type == normal) {
+            (*(task->task.normal_task))((int)task, task->sock_fd, task->data);
+        } else if (task->task_type == special) {
+            (*(task->task.special_task))((int)task, task->sock_fd, task->data, 0);
+        } else {
+            printf("unknown task_type: %d\n", task->task_type);
+        }
 
         pthread_mutex_lock(&(pool->queue_ready_lock));
+        task->is_running = 0;
         pool->current_free_count += 1;
         _bh_running_thread_change(-1, thread_id, 0);
         pthread_mutex_unlock(&(pool->queue_ready_lock));
@@ -146,9 +159,11 @@ static bh_thread_task *
 _bh_thread_task_init() {
     bh_thread_task *temp_task = NULL;
     temp_task = (bh_thread_task *)malloc(sizeof(bh_thread_task));
+    temp_task->task_type = 0;
+    temp_task->is_running = 0;
     temp_task->data = 0;
     temp_task->sock_fd = 0;
-    temp_task->task = NULL;
+    temp_task->task.normal_task = NULL;
     temp_task->next = NULL;
     return temp_task;
 }
@@ -225,18 +240,42 @@ bh_thread_pool_create(int max_threads, int queue_size) {
 }
 
 void
-bh_thread_pool_add_task(bh_thread_pool *thread_pool, bh_task task, int sock_fd, int data) {
+bh_thread_pool_add_normal_task(bh_thread_pool *thread_pool, bh_normal_task normal_task, int task_type, int sock_fd, int data) {
     bh_thread_task *temp_task = NULL;
 
     pthread_mutex_lock(&(thread_pool->queue_ready_lock));
 
-    if (thread_pool->current_free_count == 1) {
+    if (thread_pool->current_free_count==1 || thread_pool->queue_current_write->next->is_running) {
         _bh_thread_pool_queue_expansion(thread_pool->queue_current_write, thread_pool->queue_current_write->next);
     }
     temp_task = thread_pool->queue_current_write;
+    temp_task->task_type = task_type;
+    temp_task->is_running = 0;
     temp_task->data = data;
     temp_task->sock_fd = sock_fd;
-    temp_task->task = task;
+    temp_task->task.normal_task = normal_task;
+    thread_pool->queue_current_write = thread_pool->queue_current_write->next;
+    thread_pool->current_task_count += 1;
+    thread_pool->current_free_count -= 1;
+    pthread_cond_signal(&(thread_pool->queue_ready));
+    pthread_mutex_unlock(&(thread_pool->queue_ready_lock));
+}
+
+void
+bh_thread_pool_add_special_task(bh_thread_pool *thread_pool, bh_special_task special_task, int task_type, int sock_fd, int data, int special) {
+    bh_thread_task *temp_task = NULL;
+
+    pthread_mutex_lock(&(thread_pool->queue_ready_lock));
+
+    if (thread_pool->current_free_count==1 || thread_pool->queue_current_write->next->is_running) {
+        _bh_thread_pool_queue_expansion(thread_pool->queue_current_write, thread_pool->queue_current_write->next);
+    }
+    temp_task = thread_pool->queue_current_write;
+    temp_task->task_type = task_type;
+    temp_task->is_running = 0;
+    temp_task->data = data;
+    temp_task->sock_fd = sock_fd;
+    temp_task->task.special_task = special_task;
     thread_pool->queue_current_write = thread_pool->queue_current_write->next;
     thread_pool->current_task_count += 1;
     thread_pool->current_free_count -= 1;
