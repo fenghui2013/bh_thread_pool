@@ -11,14 +11,11 @@
 
 typedef struct bh_thread_task bh_thread_task;
 struct bh_thread_task {
-    int task_type;
+    int task_id;
     int is_running;
-    int sock_fd;
-    int data;
-    union {
-        bh_normal_task normal_task;
-        bh_special_task special_task;
-    } task;
+    bh_task task;
+    void *task_arg;
+    bh_task_arg_handler handler;
     bh_thread_task *next;
 };
 
@@ -121,7 +118,7 @@ _task_killer(void *arg) {
 
     while (1) {
         pthread_mutex_lock(&(pool->queue_ready_lock));
-        while ((pool->current_task_count==0 || (pool->current_task_count!=0 && !_bh_running_thread_check(thread_id, pool->queue_current_read->sock_fd)))
+        while ((pool->current_task_count==0 || (pool->current_task_count!=0 && !_bh_running_thread_check(thread_id, pool->queue_current_read->task_id)))
                 && !pool->shutdown) {
             const struct timespec timeout = _get_timeout(0, 1000000*100);
             //const struct timespec timeout = _get_timeout(1, 0);
@@ -139,13 +136,8 @@ _task_killer(void *arg) {
         pool->current_task_count -= 1;
         pthread_mutex_unlock(&(pool->queue_ready_lock));
 
-        if (task->task_type == normal) {
-            (*(task->task.normal_task))((int)task, task->sock_fd, task->data);
-        } else if (task->task_type == special) {
-            (*(task->task.special_task))((int)task, task->sock_fd, task->data, 0);
-        } else {
-            printf("unknown task_type: %d\n", task->task_type);
-        }
+        (*(task->task))(task->task_arg);
+        (*(task->handler))(task->task_arg);
 
         pthread_mutex_lock(&(pool->queue_ready_lock));
         task->is_running = 0;
@@ -159,11 +151,11 @@ static bh_thread_task *
 _bh_thread_task_init() {
     bh_thread_task *temp_task = NULL;
     temp_task = (bh_thread_task *)malloc(sizeof(bh_thread_task));
-    temp_task->task_type = 0;
+    temp_task->task_id = 0;
     temp_task->is_running = 0;
-    temp_task->data = 0;
-    temp_task->sock_fd = 0;
-    temp_task->task.normal_task = NULL;
+    temp_task->task = NULL;
+    temp_task->task_arg = NULL;
+    temp_task->handler = NULL;
     temp_task->next = NULL;
     return temp_task;
 }
@@ -240,7 +232,7 @@ bh_thread_pool_create(int max_threads, int queue_size) {
 }
 
 void
-bh_thread_pool_add_normal_task(bh_thread_pool *thread_pool, bh_normal_task normal_task, int task_type, int sock_fd, int data) {
+bh_thread_pool_add_task(bh_thread_pool *thread_pool, bh_task task, void *task_arg, int task_id, bh_task_arg_handler handler) {
     bh_thread_task *temp_task = NULL;
 
     pthread_mutex_lock(&(thread_pool->queue_ready_lock));
@@ -249,33 +241,11 @@ bh_thread_pool_add_normal_task(bh_thread_pool *thread_pool, bh_normal_task norma
         _bh_thread_pool_queue_expansion(thread_pool->queue_current_write, thread_pool->queue_current_write->next);
     }
     temp_task = thread_pool->queue_current_write;
-    temp_task->task_type = task_type;
+    temp_task->task_id = task_id;
     temp_task->is_running = 0;
-    temp_task->data = data;
-    temp_task->sock_fd = sock_fd;
-    temp_task->task.normal_task = normal_task;
-    thread_pool->queue_current_write = thread_pool->queue_current_write->next;
-    thread_pool->current_task_count += 1;
-    thread_pool->current_free_count -= 1;
-    pthread_cond_signal(&(thread_pool->queue_ready));
-    pthread_mutex_unlock(&(thread_pool->queue_ready_lock));
-}
-
-void
-bh_thread_pool_add_special_task(bh_thread_pool *thread_pool, bh_special_task special_task, int task_type, int sock_fd, int data, int special) {
-    bh_thread_task *temp_task = NULL;
-
-    pthread_mutex_lock(&(thread_pool->queue_ready_lock));
-
-    if (thread_pool->current_free_count==1 || thread_pool->queue_current_write->next->is_running) {
-        _bh_thread_pool_queue_expansion(thread_pool->queue_current_write, thread_pool->queue_current_write->next);
-    }
-    temp_task = thread_pool->queue_current_write;
-    temp_task->task_type = task_type;
-    temp_task->is_running = 0;
-    temp_task->data = data;
-    temp_task->sock_fd = sock_fd;
-    temp_task->task.special_task = special_task;
+    temp_task->task = task;
+    temp_task->task_arg = task_arg;
+    temp_task->handler = handler;
     thread_pool->queue_current_write = thread_pool->queue_current_write->next;
     thread_pool->current_task_count += 1;
     thread_pool->current_free_count -= 1;
